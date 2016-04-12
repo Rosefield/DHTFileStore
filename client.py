@@ -150,5 +150,5 @@ if __name__ == "__main__":
     client = DistributedClient()
     print("Data written to '%s'" %
         client.retrieve_file(
-            os.join(DEFAULT_PATH, "fake_keys"),
-            os.join(DEFAULT_PATH, "fake_data")))
+            os.path.join(DEFAULT_PATH, "fake_keys"),
+            os.path.join(DEFAULT_PATH, "fake_data")))
