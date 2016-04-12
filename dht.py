@@ -20,26 +20,89 @@ class Node:
     def __str__(self):
         return "Node(id {}, ip {}, port {})".format(self.node_id, self.ip, self.port)
 
+
 class DHT:
+    class Networking:
+        def __init__(self, dht_protocol):
+            self.dht = dht_protocol
+
+        def connection_made(self, transport):
+            log.info("Connection made")
+            self.transport = transport
+
+        def datagram_received(self, data, addr):
+            log.info("Received %s from %s", data, addr)
+
+            message = None
+            try:
+                message = self.parse_message(data)
+                if message.get("error") is not None:
+                    log.info("Error parsing message %s", message.get("error"))
+                    self.transport.close()
+                    return
+            except Exception as e:
+                log.warning("Exception %s thrown parsing message %s", e, data)
+                self.transport.close()
+                return
+                
+            is_resp = message.get("resp")
+            if is_resp is not None and is_resp == True:
+                self.dht.handle_response(message)   
+            else:
+                #make whatever store/find/etc requests
+                #Can't use yield from directly since this function is never itself scheduled
+                task = asyncio.async(self.dht.handle_request(message))
+
+                #schedule response
+                task.add_done_callback(lambda task: self.send_message(task.result(), addr))
+            log.info("Connection end for %s", addr)
+
+#            self.transport.close()
+
+        def parse_message(self, data):
+            if data is None:
+                return {"error": "empty message"}
+            message = json.loads(data.decode('utf8'))
+
+            if not isinstance(message, dict):
+                return {"error": "message incorrectly formed"}
+
+            return message
+
+        def send_message(self, message, addr):
+            message_s = json.dumps(message).encode('utf8')
+            log.info("Sending message %s to %s", message_s, addr)
+
+            self.transport.sendto(message_s, addr)
+            
+
+        def error_received(self, exc):
+            print('Error received:', exc)
+
+        def connection_lost(self, exc):
+            log.info("connection closed %s", exc)
+
     def __init__(self, eventLoop, config_file):
         self.loop = eventLoop
         self.config_file = config_file
         config = self.read_config(config_file)
         self.file_dir = config["file_dir"]
         self.node = Node(config)
-
         self.nodes = [Node(n) for n in config["nodes"]]
         self.server = None
         self.hash_id = None
         #The ids of the current in-flight requests
-        self.request_magics = []
-        #self.clients = []
+        self.request_magics = {}
+
+        self.networking = self.Networking(self)
+
         pass
 
     def start(self):
         if self.server is None:
-            task = asyncio.streams.start_server(self.handle_client, self.node.ip, self.node.port, loop=self.loop)
-            self.server = self.loop.run_until_complete(task)
+            task = asyncio.Task(self.loop.create_datagram_endpoint(lambda: self.networking, 
+                        local_addr=(self.node.ip, self.node.port)))
+            self.server, _ = self.loop.run_until_complete(task)
 
         pass
 
@@ -53,61 +116,6 @@ class DHT:
         Joins the DHT network
         '''
         pass
-
-
-    @asyncio.coroutine
-    def handle_client(self, reader, writer):
-
-        peer = writer.get_extra_info("socket").getpeername()
-
-        log.info("New Connection from %s", peer)
-
-        #parse request
-        request = None
-        try:
-            request = yield from self.parse_request(reader)
-            if request.get("error") is not None:
-                log.info("Error parsing request %s", request.get("error"))
-                self.send_message(request, writer)
-                writer.close()
-                return
-        except Exception as e:
-            log.info("Exception thrown %s", e)
-            writer.close()
-            return
-            
-        #make whatever store/find/etc requests
-        response = yield from self.handle_request(request)
-
-        #send response
-        self.send_message(response, writer)
-        log.info("Connection end for %s", peer)
-
-        writer.close()
-        
-
-    @asyncio.coroutine
-    def parse_request(self, reader):
-        request_s = yield from asyncio.wait_for(reader.readline(), 
-            timeout=20, loop=self.loop)
-        log.info("recieved request %s", request_s)
-
-        if request_s is None:
-            return
-        request = json.loads(request_s.decode('utf8'))
-
-        if not isinstance(request, dict):
-            return {'error': 'Request incorrectly formed'}
-
-        magic = request.get("magic")
-        if magic is None or not isinstance(magic, int):
-            return {'error': 'Request has no request magic'}
-
-        request_type = request.get("type")
-        if request_type is None or not isinstance(request_type, str):
-            return {'error': 'Request has no request type'}
-
-        return request
 
     @asyncio.coroutine
     def handle_request(self, request):
@@ -140,20 +148,26 @@ class DHT:
         -Most requests will have a "hash" param
         -The store_value will also have a "value" param that is the data
         '''
+        magic = request.get("magic")
+        if magic is None or not isinstance(magic, int):
+            return {"error": 'Request has no request magic'}
+
+        request_type = request.get("type")
+        if request_type is None or not isinstance(request_type, str):
+            return {"error": 'Request has no request type'}
 
         request_params = request.get("params")
         if request_params is None or not isinstance(request_params, dict):
-            return {'error': 'Request has no params (it can be an empty dict)'}
+            return {"error": 'Request has no params (it can be an empty dict)'}
 
-        response = {"magic":request["magic"], "resp":True}
+        response = {"magic":request["magic"], "type":request["type"], "resp":True}
         
-        request_type = request.get("type")
         #Mostly for testing
         if(request_type == "ping_nodes"):
             yield from self.ping_nodes()
 
         if(request_type == "ping_node"):
-            response["result"] = {"node_id":self.node_id, "ip":self.ip, "port":self.port}
+            response["result"] = self.node.__dict__
         
         if(request_type == "store_value"):
             yield from self.store_value(requst_params["id"], request_params["data"])
@@ -167,60 +181,80 @@ class DHT:
 
         return response
 
+    def handle_response(self, response):
+        log.info("Handling response %s", response)
+        magic = response.get("magic")
+        if magic is None or not isinstance(magic, int):
+            log.info("Response has no magic")
+            return
+
+        request_type = response.get("type")
+        if request_type is None or not isinstance(request_type, str):
+            log.info("Response has no request type")
+            return
+
+        request_node = self.request_magics.get(magic)
+        if request_node is None:
+            log.info("Response was unexpected. Duplicate response?")
+            return
+
+        #Marking the request/response transaction as complete
+        del self.request_magics[magic]
+
+
+        result = response.get("result")
+
+        if(request_type == "ping_node"):
+            node = Node(result)
+            log.info("Ping response from %s", node)
+            #update_node(request_node, node)
+            
+                
+        
+        if(request_type == "store_value"):
+            pass
+
+        if(request_type == "find_node"):
+            pass
+
+        if(request_type == "find_value"):
+            pass
+        
+
+
+
     def nearest_nodes(self, nodes, hash_id, k = 7):
         '''
         Return the top k nodes who's ids are nearest to the provided hash
         '''
         return sorted(nodes, key=lambda x: hash_utils.dist(hash_id, x.id), cmp=hash_utils.compare)[:k]
 
-    def send_message(self, response, writer):
-        response_s = json.dumps(response).encode('utf8') + b'\r\n'
-        log.info("Sending message %s", response_s)
-
-        writer.write(response_s)
-        
-
-    @asyncio.coroutine
-    def send_request(self, request, node, callback=None, error_callback=None):
+    def make_request(self, request, node):
         request['magic'] = int.from_bytes(os.urandom(4), byteorder='little')
 
-        self.request_magics.append(request['magic'])
+        self.request_magics[request['magic']] = node
         host = node.ip
         port = node.port
 
         request_s = json.dumps(request).encode('utf8')
-        log.info("Making request with %s", request_s)
+        log.info("Making request with %s to (%s:%s)", request_s, host, port)
 
         try:
-            reader, writer = yield from asyncio.open_connection(host, port, loop=self.loop)
-            log.info('Connected to %s:%s', host, port)
-            self.send_message(request, writer)
-            if callback is not None:
-                yield from callback(reader, writer)
-            return reader, writer
+            self.networking.send_message(request, (host, port))
         except Exception as e:
-            log.info('Error connecting to %s:%s', host, port)
-            if error_callback is not None:
-                yield from error_callback()
-            return None
+            log.info("Error %s connecting to %s:%s", e, host, port)
     
     @asyncio.coroutine
     def ping_nodes(self):
         '''
-        Checks to see which of the nodes we have are still alive / in the network
+        Sends a request to each of our nodes to see if they are still alive
         '''
-        
-        clients = {}
         log.info("Pinging %d nodes", len(self.nodes))
 
         for node in self.nodes:
             log.info("Pinging node %s", str(node))
-            request = { "magic": os.urandom(4), "type":"ping_node", "params" : {} }
-            task = self.send_request(request, node)
-            clients[task] = node
-
-        tasks = clients.keys()
-        yield from asyncio.wait(tasks, loop=self.loop)
+            request = { "type":"ping_node", "params" : {} }
+            task = self.make_request(request, node)
 
     @asyncio.coroutine
     def store_value(self, hash_id, data):
