@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import base64
+import functools
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -24,10 +25,8 @@ class DHT:
         self.loop = eventLoop
         self.config_file = config_file
         config = self.read_config(config_file)
-        self.node_id = config["node_id"]
-        self.host = config["host"]
-        self.port = config["port"]
         self.file_dir = config["file_dir"]
+        self.node = Node(config)
 
         self.nodes = [Node(n) for n in config["nodes"]]
         self.server = None
@@ -39,7 +38,7 @@ class DHT:
 
     def start(self):
         if self.server is None:
-            task = asyncio.streams.start_server(self.handle_client, self.host, self.port, loop=self.loop)
+            task = asyncio.streams.start_server(self.handle_client, self.node.ip, self.node.port, loop=self.loop)
             self.server = self.loop.run_until_complete(task)
 
         pass
@@ -142,26 +141,29 @@ class DHT:
         -The store_value will also have a "value" param that is the data
         '''
 
-
         request_params = request.get("params")
         if request_params is None or not isinstance(request_params, dict):
             return {'error': 'Request has no params (it can be an empty dict)'}
 
-        response = {"magic":request["magic"], "params" : {}}
+        response = {"magic":request["magic"], "resp":True}
         
         request_type = request.get("type")
+        #Mostly for testing
         if(request_type == "ping_nodes"):
             yield from self.ping_nodes()
+
+        if(request_type == "ping_node"):
+            response["result"] = {"node_id":self.node_id, "ip":self.ip, "port":self.port}
         
         if(request_type == "store_value"):
             yield from self.store_value(requst_params["id"], request_params["data"])
-            response["params"]["result"] = "saved"
+            response["result"] = "saved"
 
         if(request_type == "find_node"):
-            response["params"]["result"] = yield from self.find_node(request_params["id"])
+            response["result"] = yield from self.find_node(request_params["id"])
 
         if(request_type == "find_value"):
-            response["params"]["result"] = yield from self.find_value(request_params["id"])
+            response["result"] = yield from self.find_value(request_params["id"])
 
         return response
 
@@ -172,16 +174,19 @@ class DHT:
         return sorted(nodes, key=lambda x: hash_utils.dist(hash_id, x.id), cmp=hash_utils.compare)[:k]
 
     def send_message(self, response, writer):
-        response_s = json.dumps(response).encode('utf8')
+        response_s = json.dumps(response).encode('utf8') + b'\r\n'
         log.info("Sending message %s", response_s)
 
         writer.write(response_s)
+        
 
     @asyncio.coroutine
-    def send_request(self, request, host, port):
+    def send_request(self, request, node, callback=None, error_callback=None):
         request['magic'] = int.from_bytes(os.urandom(4), byteorder='little')
 
         self.request_magics.append(request['magic'])
+        host = node.ip
+        port = node.port
 
         request_s = json.dumps(request).encode('utf8')
         log.info("Making request with %s", request_s)
@@ -190,10 +195,14 @@ class DHT:
             reader, writer = yield from asyncio.open_connection(host, port, loop=self.loop)
             log.info('Connected to %s:%s', host, port)
             self.send_message(request, writer)
+            if callback is not None:
+                yield from callback(reader, writer)
             return reader, writer
         except Exception as e:
             log.info('Error connecting to %s:%s', host, port)
-        return None
+            if error_callback is not None:
+                yield from error_callback()
+            return None
     
     @asyncio.coroutine
     def ping_nodes(self):
@@ -207,22 +216,11 @@ class DHT:
         for node in self.nodes:
             log.info("Pinging node %s", str(node))
             request = { "magic": os.urandom(4), "type":"ping_node", "params" : {} }
-            task = self.send_request(request, node.ip, node.port)
+            task = self.send_request(request, node)
             clients[task] = node
 
-
         tasks = clients.keys()
-        done, pending = yield from asyncio.wait(tasks, timeout=30, loop=self.loop)
-
-        #Remove nodes that didn't respond from our node list
-        to_remove = [clients[task] for task in clients.keys() if task in pending]
-        self.nodes = [node for node in self.nodes if node not in to_remove]
-
-        to_update = [clients[task] for task in clients.keys() if task in done]
-        for node in to_update:
-            print(node)
-
-        pass
+        yield from asyncio.wait(tasks, loop=self.loop)
 
     @asyncio.coroutine
     def store_value(self, hash_id, data):
@@ -265,8 +263,6 @@ def main():
     loop.run_until_complete(dht.ping_nodes())
     
     loop.run_forever()
-        
-
 
 
 if __name__ == '__main__':
