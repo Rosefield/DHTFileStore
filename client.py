@@ -62,15 +62,16 @@ class DistributedClient:
         '''
         # read hashes from file
         # TODO: verify integrity of hash file (error check this)
-        hashes = []
         with open(hashfile_path, "r") as hashfile:
-            for line in hashfile:
-                if not line:
-                    continue
+            hashes = [(hash, int(size)) for (hash, size) in # cast size to int
+                [pair.split("$") for pair in # split each pair string by $
+                hashfile.read().split("|")]] # split up the file by pipes
 
-                pair = line.split("$")
-                hashes.append((pair[0], int(pair[1])))
-
+            # alternate representation of above inline list generation
+            # contents = hashfile.read()
+            # pair_strings = contents.split("|")
+            # pairs = map(lambda pair_str: pair_str.split("$"), pair_strings)
+            # hashes = map(lambda pair: (pair[0], int(pair[1])), pairs)
         # retrieve data from read hashes
         return self.__retrieve_from_hashes(hashes)
 
@@ -107,7 +108,7 @@ class DistributedClient:
         '''
         with open(hashfile_path, "w") as hashfile:
             for chunk in hashes:
-                hashfile.write("%s$%d\n" % chunk)
+                hashfile.write("%s$%d|" % chunk)
 
     def __store_file(self, file_path): # TODO
         '''
@@ -150,5 +151,5 @@ if __name__ == "__main__":
     client = DistributedClient()
     print("Data written to '%s'" %
         client.retrieve_file(
-            os.join(DEFAULT_PATH, "fake_keys"),
-            os.join(DEFAULT_PATH, "fake_data")))
+            os.path.join(DEFAULT_PATH, "fake_keys"),
+            os.path.join(DEFAULT_PATH, "fake_data")))
