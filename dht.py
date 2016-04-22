@@ -43,16 +43,21 @@ class DHT:
             task = asyncio.Task(self.loop.create_datagram_endpoint(lambda: self.networking, 
                         local_addr=(self.node.ip, self.node.port)))
 
+
             self.server, _ = self.loop.run_until_complete(task)
     
             #File Transfer protocol server
             task = asyncio.streams.start_server(self.networking.handle_client, self.node.ip, self.node.port, loop=self.loop)
             self.loop.run_until_complete(task)
 
-        pass
+            #self.loop.run_until_complete(self.join())
+            self.loop.run_until_complete(self.ping_nodes())
+
+        return
 
     def stop(self):
         if self.server is not None:
+            #self.save_state()
             self.loop.stop()
 
     @asyncio.coroutine
@@ -61,11 +66,17 @@ class DHT:
         Joins the DHT network
         '''
         if(len(self.routing.nodes) == 0):
-            self.log.warning("No nodes to bootstrap from")
+            self.log.error("No nodes to bootstrap from")
             return
 
         nodes = yield from self.find_node(self.node.node_id)
 
+        self.log.info("Found nodes %s", nodes)
+
+        if len(nodes) == 0:
+            self.log.error("No nodes to bootstrap from")
+            return
+            
         self.routing.add_nodes(nodes)
 
         return
@@ -123,7 +134,7 @@ class DHT:
             response["result"] = self.node.__dict__
         
         if(request_type == "store_value"):
-            yield from self.get_value(requst_params["id"], Node(request_params["node"]))
+            yield from self.get_value(requst_params["id"], node=Node(request_params["node"]))
             response["result"] = "saved"
 
         if(request_type == "find_node"):
@@ -359,8 +370,6 @@ def main():
     dht = DHT(loop, args.config_file, log)    
     dht.start()
 
-    loop.run_until_complete(dht.ping_nodes())
-    
     loop.run_forever()
 
 

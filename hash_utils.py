@@ -6,7 +6,7 @@ def hash_data(data):
 	return h.digest()
 
 def xor_string(s1, s2):
-	return b"".join([chr(ord(x) ^ ord(y)) for x,y in zip(s1, s2)])
+	return "".join([chr(ord(x) ^ ord(y)) for x,y in zip(s1, s2)])
 
 def dist(h1, h2):
 	return xor_string(h1, h2)

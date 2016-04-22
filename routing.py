@@ -57,5 +57,5 @@ class Routing:
         if nodes is None:
             nodes = self.nodes
 
-        top =  sorted(nodes, key=lambda x: hash_utils.dist(node_id, x), cmp=hash_utils.compare)[:k]
+        top =  sorted(nodes, key=lambda x: hash_utils.dist(node_id, x))[:k]
         return [nodes[x] for x in top]
