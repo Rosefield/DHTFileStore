@@ -13,7 +13,7 @@ class Networking:
         self.transport = transport
 
     def datagram_received(self, data, addr):
-        self.log.info("Received %s from %s", data, addr)
+        self.log.debug("Received %s from %s", data, addr)
 
         message = None
         try:
@@ -37,7 +37,7 @@ class Networking:
 
             #schedule response
             task.add_done_callback(lambda task: self.send_message(task.result(), addr))
-        self.log.info("Connection end for %s", addr)
+        self.log.debug("Connection end for %s", addr)
 
 
     def parse_message(self, data):
@@ -52,7 +52,7 @@ class Networking:
 
     def send_message(self, message, addr):
         message_s = json.dumps(message).encode('utf8')
-        self.log.info("Sending message %s to %s", message_s, addr)
+        self.log.debug("Sending message %s to %s", message_s, addr)
 
         self.transport.sendto(message_s, addr)
         

@@ -9,7 +9,7 @@ def xor_string(s1, s2):
 	return "".join([chr(ord(x) ^ ord(y)) for x,y in zip(s1, s2)])
 
 def dist(h1, h2):
-	return xor_string(h1, h2)
+    return xor_string(h1, h2)
 
 def compare(h1, h2):
 	for x,y in zip(h1, h2):

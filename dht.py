@@ -10,8 +10,7 @@ from routing import Node, Routing
 from storage import Storage
 
 
-logging.basicConfig(level=logging.DEBUG)
-log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class DHT:
@@ -49,9 +48,8 @@ class DHT:
             #File Transfer protocol server
             task = asyncio.streams.start_server(self.networking.handle_client, self.node.ip, self.node.port, loop=self.loop)
             self.loop.run_until_complete(task)
-
-            #self.loop.run_until_complete(self.join())
-            self.loop.run_until_complete(self.ping_nodes())
+            self.loop.run_until_complete(self.join())
+            asyncio.ensure_future(self.health_check())
 
         return
 
@@ -59,6 +57,16 @@ class DHT:
         if self.server is not None:
             #self.save_state()
             self.loop.stop()
+
+    @asyncio.coroutine
+    def health_check(self):
+        
+        while True:
+            self.log.info("Health check")
+            yield from self.ping_nodes()
+
+            #Check every 10 minutes
+            yield from asyncio.sleep(600)
 
     @asyncio.coroutine
     def join(self):
@@ -71,7 +79,7 @@ class DHT:
 
         nodes = yield from self.find_node(self.node.node_id)
 
-        self.log.info("Found nodes %s", nodes)
+        self.log.debug("Found nodes %s", nodes)
 
         if len(nodes) == 0:
             self.log.error("No nodes to bootstrap from")
@@ -133,35 +141,39 @@ class DHT:
         if(request_type == "ping_node"):
             response["result"] = self.node.__dict__
         
+        request_hash = request_params.get("id")
         if(request_type == "store_value"):
-            yield from self.get_value(requst_params["id"], node=Node(request_params["node"]))
+            yield from self.get_value(requst_hash, node=Node(request_params["node"]))
             response["result"] = "saved"
 
         if(request_type == "find_node"):
-            nodes = yield from self.find_node(request_params["id"])
+            nodes = self.routing.nearest_nodes(request_hash)
             response["result"] = [n.__dict__ for n in nodes]
 
         if(request_type == "find_value"):
-            nodes = yield from self.find_value(request_params["id"])
-            response["result"] = [n.__dict__ for n in nodes]
+            if(self.storage.has(request_hash)):
+                response["result"] = self.routing.node
+            else:
+                nodes = self.routing.nearest_nodes(request_hash)
+                response["result"] = [n.__dict__ for n in nodes]
 
         return response
 
     def handle_response(self, response):
-        self.log.info("Handling response %s", response)
+        self.log.debug("Handling response %s", response)
         magic = response.get("magic")
         if magic is None or not isinstance(magic, int):
-            self.log.info("Response has no magic")
+            self.log.debug("Response has no magic")
             return
 
         request_type = response.get("type")
         if request_type is None or not isinstance(request_type, str):
-            self.log.info("Response has no request type")
+            self.log.debug("Response has no request type")
             return
 
         fut_node = self.request_magics.get(magic)
         if fut_node is None:
-            self.log.info("Response was unexpected. Duplicate response?")
+            self.log.info("Response with magic %s was unexpected. Duplicate response?", magic)
             return
 
         #Marking the request/response transaction as complete
@@ -176,12 +188,12 @@ class DHT:
             return
             
         if(request_type == "ping_node"):
-            self.log.info("Ping response from %s", node)
             fut.set_result(Node(result))
             return
         
         #Just confirmation that the result was stored
         if(request_type == "store_value"):
+            fut.set_result(result)
             return
 
         if(request_type == "find_node"):
@@ -191,8 +203,12 @@ class DHT:
             return
 
         if(request_type == "find_value"):
-            nodes = [Node(n) for n in result]
-            fut.set_result(nodes)
+            #If a node is returned, instead of a list of nodes, they have the value
+            if(isinstance(result, dict)):
+                fut.set_result(Node(result))
+            else:
+                nodes = [Node(n) for n in result]
+                fut.set_result(nodes)
     
             return
 
@@ -206,7 +222,7 @@ class DHT:
         port = node.port
 
         request_s = json.dumps(request).encode('utf8')
-        self.log.info("Making request with %s to (%s:%s)", request_s, host, port)
+        self.log.debug("Making request with %s to (%s:%s)", request_s, host, port)
 
         try:
             self.networking.send_message(request, (host, port))
@@ -223,13 +239,13 @@ class DHT:
         '''
         Sends a request to each of our nodes to see if they are still alive
         '''
-        self.log.info("Pinging %d nodes", len(self.routing.nodes))
+        self.log.debug("Pinging %d nodes", len(self.routing.nodes))
 
         futs = []
         nodes = {}        
 
         for node in self.routing:
-            self.log.info("Pinging node %s", str(node))
+            self.log.debug("Pinging node %s", str(node))
             request = { "type":"ping_node", "params" : {} }
             fut = self.make_request(request, node)
             futs.append(fut)
@@ -282,25 +298,37 @@ class DHT:
         Makes a request to the n nodes with ids closest to hash_id asking them to find the nodes who's ids
         are closest to hash_id
         '''
-        futs = []
-        for node in self.routing.nearest_nodes(hash_id):
-            request = { "type":"find_node", "params":{ "id":hash_id } }
-            fut = self.make_request(request, node)
-            futs.append(fut)
 
-        complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
+        to_search = self.routing.nearest_nodes(hash_id)
+        searched = set()
 
-        nodes = set()
-        for fut in filter(lambda f: f.exception() is None, complete):
-            res = fut.result()
-            nodes.update(res)
+        while len(to_search) > 0:
+
+            futs = []
+            self.log.debug("next search set %s", to_search)
+            for node in to_search:
+                request = { "type":"find_node", "params":{ "id":hash_id } }
+                fut = self.make_request(request, node)
+                futs.append(fut)
+
+            complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
+
+            searched.update(to_search)
+
+            nodes = set(searched)
+            for fut in filter(lambda f: f.exception() is None, complete):
+                res = fut.result()
+                res = filter(lambda x: x.node_id != self.routing.node.node_id, res)
+                nodes.update(res)
+
+            self.log.debug("new nodes %s", nodes)
+                
+            to_search = set(self.routing.nearest_nodes(hash_id, nodes=nodes)) - searched
             
-        n =  self.routing.nearest_nodes(hash_id, nodes=nodes)
-        
-        #Update our own routing table in case any of the found nodes are useful to us
-        self.routing.add_nodes(n)
+            #Update our own routing table in case any of the found nodes are useful to us
+            self.routing.add_nodes(to_search)
 
-        return n
+        return self.routing.nearest_nodes(hash_id, nodes=searched)
 
     @asyncio.coroutine
     def find_value(self, hash_id):
@@ -308,22 +336,44 @@ class DHT:
         Makes a request to the n nodes with ids closest to hash_id to find who has the file hash_id
         '''
         if(self.storage.has(hash_id)):
-            return [self.routing.node]
+            return self.routing.node
 
-        futs = []
-        for node in self.routing.nearest_nodes(hash_id):
-            request = { "type":"find_value", "params":{ "id":hash_id } }
-            fut = self.make_request(request, node)
-            futs.append(fut)
+        to_search = self.routing.nearest_nodes(hash_id)
+        searched = set()
 
-        complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
+        nodes_with_value = set()
+        while len(nodes_with_value) == 0 and len(to_search) > 0:
+            futs = []
+            self.log.info("next search set %s", to_search)
+            for node in to_search:
+                request = { "type":"find_value", "params":{ "id":hash_id } }
+                fut = self.make_request(request, node)
+                futs.append(fut)
 
-        nodes = set()
-        for fut in filter(lambda f: f.exception() is None, complete):
-            res = fut.result()
-            nodes.update(res)
+            complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
 
-        return nodes
+            searched.update(to_search)
+            new_nodes = searched.copy()
+            for fut in filter(lambda f: f.exception() is None, complete):
+                res = fut.result()
+                
+                #Either get back one node that has the value, or a list of nodes to check next
+                if isinstance(res, Node):
+                    nodes_with_value.add(res)
+                else:
+                    res = filter(lambda x: x.node_id != self.routing.node.node_id, res)
+                    new_nodes.update(res)
+
+
+            self.log.info("new nodes %s", new_nodes)
+            #Don't want to contact ourselves if that was returned
+            new_nodes.discard(self.routing.node)
+
+            #Get the next set of top nodes, excluding nodes we've already searched
+            to_search = set(self.routing.nearest_nodes(hash_id, nodes=new_nodes)) - searched
+            self.log.info("next search set %s", to_search)
+
+        return list(nodes_with_value)
 
     @asyncio.coroutine
     def get_value(self, hash_id, node = None):
@@ -332,6 +382,9 @@ class DHT:
         Optionally pass in a node to request the data from the requested node
         '''
         data = None
+
+        if(self.storage.hash(hash_id)):
+            return self.storage.get(hash_id)
         
         if node is None:
             nodes = yield from self.find_values(hash_id)
@@ -366,6 +419,7 @@ def main():
 
     loop = asyncio.get_event_loop()
     loop.set_debug(1)
+    log = logging.getLogger(__name__)
     log.setLevel(logging.DEBUG)
     dht = DHT(loop, args.config_file, log)    
     dht.start()
