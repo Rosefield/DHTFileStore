@@ -1,9 +1,9 @@
 {
-    "node_id":"1",
+    "node_id":"3007e211b66f1a1aebc5462d3256eefc1a52b7eb9199b4402383ea4fd0a64af4",
     "ip":"127.0.0.1",
     "port":55550,
     "nodes": [
-        { "node_id":"2", "ip":"127.0.0.1", "port":55555}
+        { "node_id":"1d0b1d6156b13c76f5d42c8151bff889d60f209735280ab13d9ec00679129649", "ip":"127.0.0.1", "port":55555}
     ],
     "file_dir":"dht_store/"
 }

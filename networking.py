@@ -68,18 +68,27 @@ class Networking:
     def handle_client(self, reader, writer):
         peer = writer.get_extra_info("socket").getpeername()
 
-        self.log.info("New connection from %s", peer)
+        self.log.info("New TCP connection from %s", peer)
 
         request = yield from asyncio.wait_for(reader.readline(), timeout=15)
+        #strip the newline
+        request = request[:-1].decode()
 
-        self.log.info("Peer %s requested %s", peer, request)
+        self.log.info("Peer %s requested %s and we have it? %s", peer, request, self.storage.has(request))
+        
 
         if self.storage.has(request):
             self.log.info("Serving %s", request)
             data = self.storage.get(request)
-            writer.write("{}\n".format(len(data)))
+            data_len = len(data)
+            writer.write(data_len.to_bytes(4, byteorder="little") + b"\n")
+            yield from writer.drain()
+            self.log.debug("Sent size header (%d) for %s", data_len, request)
+            if isinstance(data, str):
+                data = data.encode()
             writer.write(data)
             yield from writer.drain()
+            self.log.debug("Sent data for %s", request)
 
         writer.close()
 
@@ -89,11 +98,21 @@ class Networking:
         try:
             reader, writer = yield from asyncio.open_connection(node.ip, node.port)
 
+            #Request the key
+            writer.write(hash_id.encode() + b"\n")
+            yield from writer.drain()
+            #Wait until the request has been sent before continuing
+
             size = yield from asyncio.wait_for(reader.readline(), timeout=10)
-            data = yield from reader.read(int(size))
+            size = int.from_bytes(size[:-1], byteorder="little")
+
+            self.log.debug("Request %s of size %d", hash_id, size)
+            data = yield from reader.read(size)
+            self.log.debug("Finished receiving data for %s, received %d bytes", hash_id, len(data))
+            data = data
 
         except Exception as e:
-            log.warning("Error connecting to %s:%s (%s)", node.ip, node.port, exception)
+            self.log.warning("Error connecting to %s:%s (%s)", node.ip, node.port, e)
 
         return data
 

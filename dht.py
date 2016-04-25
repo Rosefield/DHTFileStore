@@ -65,6 +65,19 @@ class DHT:
             self.log.info("Health check")
             yield from self.ping_nodes()
 
+            data = os.urandom(1000)
+            h = hash_utils.hash_data(data)
+            yield from self.store_value(h, data)
+        
+            h = "2ea970ff63aec5d7a014ca6447ec743d3ba37450b85ebdcbb582b089b0194fa2"
+            data = self.storage.get(h)
+            
+            
+            test = yield from self.get_value(h)
+            
+            self.log.debug("Get value successful %s", test == data)
+
+
             #Check every 10 minutes
             yield from asyncio.sleep(600)
 
@@ -132,6 +145,17 @@ class DHT:
         if request_params is None or not isinstance(request_params, dict):
             return {"error": 'Request has no params (it can be an empty dict)'}
 
+        request_node = request.get("requester")
+        if request_node is None or not isinstance(request_node, dict):
+            return {"error": 'Request has no associated requester node'}
+
+        #Try to add the requester node to our routing table, so that nodes can bootstrap themselves
+        #into the network
+        request_node = Node(request_node)
+        self.log.info("Received request from node %s", request_node)
+        self.routing.add_or_update_node(request_node)
+            
+
         response = {"magic":request["magic"], "type":request["type"], "resp":True}
         
         #Mostly for testing
@@ -143,7 +167,8 @@ class DHT:
         
         request_hash = request_params.get("id")
         if(request_type == "store_value"):
-            yield from self.get_value(requst_hash, node=Node(request_params["node"]))
+            #Initialize a get request to the other node, opens a TCP connection to transfer the data
+            yield from self.get_value(request_hash, node=request_node)
             response["result"] = "saved"
 
         if(request_type == "find_node"):
@@ -152,7 +177,7 @@ class DHT:
 
         if(request_type == "find_value"):
             if(self.storage.has(request_hash)):
-                response["result"] = self.routing.node
+                response["result"] = self.node.__dict__
             else:
                 nodes = self.routing.nearest_nodes(request_hash)
                 response["result"] = [n.__dict__ for n in nodes]
@@ -215,6 +240,7 @@ class DHT:
 
     def make_request(self, request, node):
         request['magic'] = int.from_bytes(os.urandom(4), byteorder='little')
+        request["requester"] = self.node.__dict__
 
         future = asyncio.Future()
         self.request_magics[request['magic']] = {"node":node, "fut":future}
@@ -251,6 +277,8 @@ class DHT:
             futs.append(fut)
             nodes[fut] = node
 
+        
+
         complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
     
         for f in complete:
@@ -281,10 +309,7 @@ class DHT:
 
         futs = []
         for node in nodes:
-            request = { "request_type":"store_value", 
-                "params":
-                    { "id":hash_id, "node":self.routing.node.__dict__}
-                }
+            request = { "type":"store_value", "params": { "id":hash_id } }
             fut = self.make_request(request, node)
             futs.append(fut)
 
@@ -318,7 +343,7 @@ class DHT:
             nodes = set(searched)
             for fut in filter(lambda f: f.exception() is None, complete):
                 res = fut.result()
-                res = filter(lambda x: x.node_id != self.routing.node.node_id, res)
+                res = filter(lambda x: x.node_id != self.node.node_id, res)
                 nodes.update(res)
 
             self.log.debug("new nodes %s", nodes)
@@ -335,8 +360,8 @@ class DHT:
         '''
         Makes a request to the n nodes with ids closest to hash_id to find who has the file hash_id
         '''
-        if(self.storage.has(hash_id)):
-            return self.routing.node
+        #if(self.storage.has(hash_id)):
+        #    return self.node
 
         to_search = self.routing.nearest_nodes(hash_id)
         searched = set()
@@ -344,7 +369,7 @@ class DHT:
         nodes_with_value = set()
         while len(nodes_with_value) == 0 and len(to_search) > 0:
             futs = []
-            self.log.info("next search set %s", to_search)
+            self.log.debug("next search set %s", to_search)
             for node in to_search:
                 request = { "type":"find_value", "params":{ "id":hash_id } }
                 fut = self.make_request(request, node)
@@ -361,17 +386,15 @@ class DHT:
                 if isinstance(res, Node):
                     nodes_with_value.add(res)
                 else:
-                    res = filter(lambda x: x.node_id != self.routing.node.node_id, res)
+                    #Don't want to contact ourselves if that was returned
+                    res = filter(lambda x: x.node_id != self.node.node_id, res)
                     new_nodes.update(res)
 
 
             self.log.info("new nodes %s", new_nodes)
-            #Don't want to contact ourselves if that was returned
-            new_nodes.discard(self.routing.node)
 
             #Get the next set of top nodes, excluding nodes we've already searched
             to_search = set(self.routing.nearest_nodes(hash_id, nodes=new_nodes)) - searched
-            self.log.info("next search set %s", to_search)
 
         return list(nodes_with_value)
 
@@ -383,11 +406,11 @@ class DHT:
         '''
         data = None
 
-        if(self.storage.hash(hash_id)):
-            return self.storage.get(hash_id)
+        #if(self.storage.has(hash_id)):
+        #    return self.storage.get(hash_id)
         
         if node is None:
-            nodes = yield from self.find_values(hash_id)
+            nodes = yield from self.find_value(hash_id)
 
             if len(nodes) == 0:
                 raise Exception("No nodes have the requested value ({})".format(hash_id))
@@ -402,6 +425,10 @@ class DHT:
             data = yield from self.networking.request_key(hash_id, node)
 
         if data is not None:
+            h = hash_utils.hash_data(data)
+            if(h != hash_id):
+                self.log.warning("Data returned for request %s did not match the hash (calculated %s", hash_id, h)
+                return None
             self.storage.set(hash_id, data)
 
         return data
@@ -425,6 +452,8 @@ def main():
     dht.start()
 
     loop.run_forever()
+
+    dht.stop()
 
 
 if __name__ == '__main__':
