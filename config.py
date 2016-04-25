@@ -1,11 +1,18 @@
 import json
 
 class Config(object):
+    class __Config(object):
+        __CONFIG_PATH = "config.json"
+
+        def __init__(self):
+            with open(self.__CONFIG_PATH, "r") as config_file:
+                self.__dict__.update(json.loads(config_file.read()))
+
     __instance = None
 
-    def __init__(self, config_path):
+    def __init__(self):
         if not self.__instance:
-            self.__instance = Config.__Config(config_path)
+            self.__instance = Config.__Config()
 
     def __getattr__(self, name):
         return getattr(self.__instance, name)
@@ -16,15 +23,11 @@ class Config(object):
         else:
             raise AttributeError
 
-    class __Config(object):
-        def __init__(self, config_path):
-            with open(config_path, "r") as config_file:
-                self.__dict__.update(json.loads(config_file.read()))
 
 if __name__ == "__main__":
-    config = Config("config.json")
+    config = Config()
     print(config.file_dir)
-    config2 = Config("config.json")
+    config2 = Config()
     try:
         config2.port = 88888
     except AttributeError:

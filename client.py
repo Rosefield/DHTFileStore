@@ -1,4 +1,10 @@
-import os
+from os import path
+from argparse import ArgumentParser
+import logging
+import sys
+
+from dht import startup as start_dht
+from hash_utils import hash_data
 
 FAKE_HASHES = [
     ("1EB79602411EF02CF6FE117897015FFF89F80FACE4ECCD50425C45149B148408", 992358),
@@ -9,8 +15,11 @@ FAKE_HASHES = [
     ("9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08", 600106),
     ("3A4278F83ECEA3815F068FF7E014DD671BC7D790661F139315B2952888356A72", 907218),
 ]
-DEFAULT_PATH = os.path.relpath("./dht_store/")
+DEFAULT_PATH = path.relpath("./dht_store/")
+MAX_CHUNK_SIZE = 1 << 20
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 byte_suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 def humansize(nbytes):
@@ -45,35 +54,45 @@ def humansize(nbytes):
 
 
 class DistributedClient:
+    def __init__(self, dht):
+        self.dht = dht
+
     def __retrieve_from_hashes(self, hashes): # TODO
         '''
         Given a list of tuples containing hashes and chunk sizes, retrieves the
         data chunks and creates a local copy of the file
         '''
         for (hash, size) in hashes:
-            print("Hash: %s\tSize (bytes): %s" % (hash, humansize(size)))
+            yield bytearray(
+                "Hash: %s\tSize (bytes): %s\n" % (hash, humansize(size)),
+                "utf-8")
 
-        return b"FAKE FILE DATA FOR WRITE"
+        yield None
 
     def __retrieve_from_file(self, hashfile_path):
         '''
         Given a path to a file containing hashes and chunk sizes, retrieves the
         data chunks and creates a local copy of the file
         '''
+        print("__retrieve_from_file")
         # read hashes from file
         # TODO: verify integrity of hash file (error check this)
         with open(hashfile_path, "r") as hashfile:
             hashes = [(hash, int(size)) for (hash, size) in # cast size to int
                 [pair.split("$") for pair in # split each pair string by $
-                hashfile.read().split("|")]] # split up the file by pipes
+                hashfile.read().split("|") # split up the file by pipes
+                if pair]] # ignore empty string residues from end of file
 
             # alternate representation of above inline list generation
             # contents = hashfile.read()
-            # pair_strings = contents.split("|")
+            # pair_strings = filter(None, contents.split("|"))
             # pairs = map(lambda pair_str: pair_str.split("$"), pair_strings)
             # hashes = map(lambda pair: (pair[0], int(pair[1])), pairs)
+
+        log.debug("Read hashes from '%s'")
+
         # retrieve data from read hashes
-        return self.__retrieve_from_hashes(hashes)
+        yield from self.__retrieve_from_hashes(hashes)
 
     def retrieve_file(self, hash_data, file_path):
         '''
@@ -86,15 +105,25 @@ class DistributedClient:
         Return:
             (str) file path of retrieved file
         '''
-        # get file data
-        if isinstance(hash_data, basestring):
-            file_data = self.__retrieve_from_file(hash_data)
+        # determine retrieval function to use
+        if isinstance(hash_data, str):
+            retrieve_fn = self.__retrieve_from_file
         else:
-            file_data = self.__retrieve_from_hashes(hash_data)
+            retrieve_fn = self.__retrieve_from_hashes
 
-        # write to local file
+        # write to the file as chunks become available
         with open(file_path, "wb") as local_file:
-            local_file.write(file_data)
+            for chunk in retrieve_fn(hash_data):
+                print(chunk)
+
+                if chunk is not None:
+                    # write to local file
+                    local_file.write(chunk)
+
+        if isinstance(hash_data, str):
+            log.info(
+                "Retrieved file from hashes in '%s' to '%s'" % \
+                (hash_data, file_path))
 
         return file_path
 
@@ -110,6 +139,8 @@ class DistributedClient:
             for chunk in hashes:
                 hashfile.write("%s$%d|" % chunk)
 
+        log.debug("Wrote hashes to '%s'" % hashfile_path)
+
     def __store_file(self, file_path): # TODO
         '''
         Stores file data on the network and returns a set of hashes stored
@@ -119,7 +150,21 @@ class DistributedClient:
         Returns:
             [(str, int), ...] a list of hash-size tuples
         '''
-        return FAKE_HASHES
+        unread = path.getsize(file_path)
+        hashes = []
+
+        with open(file_path, "rb") as file:
+            while unread > 0:
+                chunk = file.read(MAX_CHUNK_SIZE)
+                hash = hash_data(chunk)
+
+                self.dht.store_value(hash, chunk)
+                hashes.append((hash, min(MAX_CHUNK_SIZE, unread)))
+
+                unread -= MAX_CHUNK_SIZE
+
+        print(hashes)
+        return hashes
 
     def store_file(self, file_path, hashfile_path=None):
         '''
@@ -138,18 +183,51 @@ class DistributedClient:
         # determine hash file path
         # TODO: better file name choice
         if hashfile_path is None:
-            hashfile_path = os.path.join(DEFAULT_PATH, hashes[0][0])
-        hashfile_path = os.path.abspath(hashfile_path)
+            hashfile_path = path.join(DEFAULT_PATH, hashes[0][0])
+        hashfile_path = path.abspath(hashfile_path)
 
         # write out hashes
         self.__write_hashfile(hashfile_path, hashes)
 
+        log.info(
+            "Stored file '%s' and wrote hashes to '%s'" % \
+            (file_path, hashfile_path))
+
         return hashfile_path;
 
+def main(store, retrieve, config_file):
+    loop, dht = start_dht(config_file)
+    client = DistributedClient(dht)
+
+    if store:
+        client.store_file(*store)
+    else:
+        client.retrieve_file(*retrieve)
+
+    loop.run_forever()
 
 if __name__ == "__main__":
-    client = DistributedClient()
-    print("Data written to '%s'" %
-        client.retrieve_file(
-            os.path.join(DEFAULT_PATH, "fake_keys"),
-            os.path.join(DEFAULT_PATH, "fake_data")))
+    arg = ArgumentParser(description="Client CLI")
+    group = arg.add_mutually_exclusive_group(required=True)
+
+    group.add_argument(
+        "-s", "--store",
+        nargs=2,
+        help="Stores a file in the network",
+        metavar=("source_loc", "hashfile_loc"))
+    group.add_argument(
+        "-r", "--retrieve",
+        nargs=2,
+        help="Retrieves a file; first argument specifies hash file; second " +
+            "argument specifies destination of retrieved file",
+        metavar=("source_loc", "dest_loc"))
+    arg.add_argument(
+        "-c", "--config",
+        dest="config_file",
+        default="config.json",
+        help="Config file location",
+        metavar="config_path")
+
+    args = arg.parse_args()
+
+    main(args.store, args.retrieve, args.config_file)
