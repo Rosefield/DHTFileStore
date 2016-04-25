@@ -9,16 +9,15 @@ from networking import Networking
 from routing import Node, Routing
 from storage import Storage
 
-
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
+HEALTH_CHECK_INTERVAL = 10
 
 class DHT:
-
     def __init__(self, eventLoop, config_file, log):
         self.loop = eventLoop
         self.config_file = config_file
-        self.log = log
         config = self.read_config(config_file)
 
         self.server = None
@@ -31,20 +30,18 @@ class DHT:
         self.node = Node(config)
         self.routing = Routing(self.node, [Node(n) for n in config["nodes"]])
         self.storage = Storage(config["file_dir"])
-        self.networking = Networking(self, self.storage, self.log)
-
-        pass
+        self.networking = Networking(self, self.storage, log)
 
     def start(self):
         if self.server is None:
 
             #DHT Protocol server
-            task = asyncio.Task(self.loop.create_datagram_endpoint(lambda: self.networking, 
+            task = asyncio.Task(self.loop.create_datagram_endpoint(lambda: self.networking,
                         local_addr=(self.node.ip, self.node.port)))
 
 
             self.server, _ = self.loop.run_until_complete(task)
-    
+
             #File Transfer protocol server
             task = asyncio.streams.start_server(self.networking.handle_client, self.node.ip, self.node.port, loop=self.loop)
             self.loop.run_until_complete(task)
@@ -60,13 +57,13 @@ class DHT:
 
     @asyncio.coroutine
     def health_check(self):
-        
         while True:
-            self.log.info("Health check")
+            log.info("Health check")
+            log.info("Node %s: %d chunks" % (self.node.node_id, len(self.storage.store)))
             yield from self.ping_nodes()
 
             #Check every 10 minutes
-            yield from asyncio.sleep(600)
+            yield from asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
     @asyncio.coroutine
     def join(self):
@@ -74,17 +71,17 @@ class DHT:
         Joins the DHT network
         '''
         if(len(self.routing.nodes) == 0):
-            self.log.error("No nodes to bootstrap from")
+            log.error("No nodes to bootstrap from")
             return
 
         nodes = yield from self.find_node(self.node.node_id)
 
-        self.log.debug("Found nodes %s", nodes)
+        log.debug("Found nodes %s", nodes)
 
         if len(nodes) == 0:
-            self.log.error("No nodes to bootstrap from")
+            log.error("No nodes to bootstrap from")
             return
-            
+
         self.routing.add_nodes(nodes)
 
         return
@@ -92,9 +89,10 @@ class DHT:
     @asyncio.coroutine
     def handle_request(self, request):
         '''
-        Function that will handle any requests that are made 
+        Function that will handle any requests that are made
 
         the request should have keys for
+
         magic:
         -Some value to associate the request
 
@@ -104,15 +102,15 @@ class DHT:
             and the content as the data sent
 
         -find_value request
-            If we hae the hash requested as the file we will return a note saying that (our ip/port) has 
+            If we have the hash requested as the file we will return a note saying that (our ip/port) has
             the requested file, otherwise will make requests to the our known nodes whose ids are closest
-            to the requested hash to see if they have the hash. 
+            to the requested hash to see if they have the hash.
 
         -find_node request
             We will then return the n closest nodes from the response set of the nodes we asked.
             If we are the closest node of the nodes we asked, we will just return ourself
-            
-            
+
+
         -ping_node request
             just sends a response to the requestor saying we are alive
 
@@ -120,6 +118,7 @@ class DHT:
         -Most requests will have a "hash" param
         -The store_value will also have a "value" param that is the data
         '''
+        log.info("Handling request %s", request)
         magic = request.get("magic")
         if magic is None or not isinstance(magic, int):
             return {"error": 'Request has no request magic'}
@@ -133,17 +132,18 @@ class DHT:
             return {"error": 'Request has no params (it can be an empty dict)'}
 
         response = {"magic":request["magic"], "type":request["type"], "resp":True}
-        
+
         #Mostly for testing
         if(request_type == "ping_nodes"):
             yield from self.ping_nodes()
 
         if(request_type == "ping_node"):
             response["result"] = self.node.__dict__
-        
+
         request_hash = request_params.get("id")
         if(request_type == "store_value"):
-            yield from self.get_value(requst_hash, node=Node(request_params["node"]))
+            self.store_value(request_hash, request_params.get("value"))
+            # yield from self.get_value(request_hash, node=Node(request_params["node"]))
             response["result"] = "saved"
 
         if(request_type == "find_node"):
@@ -160,20 +160,20 @@ class DHT:
         return response
 
     def handle_response(self, response):
-        self.log.debug("Handling response %s", response)
+        log.info("Handling response %s", response)
         magic = response.get("magic")
         if magic is None or not isinstance(magic, int):
-            self.log.debug("Response has no magic")
+            log.debug("Response has no magic")
             return
 
         request_type = response.get("type")
         if request_type is None or not isinstance(request_type, str):
-            self.log.debug("Response has no request type")
+            log.debug("Response has no request type")
             return
 
         fut_node = self.request_magics.get(magic)
         if fut_node is None:
-            self.log.info("Response with magic %s was unexpected. Duplicate response?", magic)
+            log.info("Response with magic %s was unexpected. Duplicate response?", magic)
             return
 
         #Marking the request/response transaction as complete
@@ -186,11 +186,11 @@ class DHT:
         #Future was cancelled / already handled but we didn't remove from our in-flight requests
         if(fut.done()):
             return
-            
+
         if(request_type == "ping_node"):
             fut.set_result(Node(result))
             return
-        
+
         #Just confirmation that the result was stored
         if(request_type == "store_value"):
             fut.set_result(result)
@@ -209,7 +209,7 @@ class DHT:
             else:
                 nodes = [Node(n) for n in result]
                 fut.set_result(nodes)
-    
+
             return
 
 
@@ -217,49 +217,49 @@ class DHT:
         request['magic'] = int.from_bytes(os.urandom(4), byteorder='little')
 
         future = asyncio.Future()
-        self.request_magics[request['magic']] = {"node":node, "fut":future}
+        self.request_magics[request['magic']] = { "node": node, "fut": future }
         host = node.ip
         port = node.port
 
         request_s = json.dumps(request).encode('utf8')
-        self.log.debug("Making request with %s to (%s:%s)", request_s, host, port)
+        log.debug("Making request with %s to (%s:%s)", request_s, host, port)
 
         try:
             self.networking.send_message(request, (host, port))
         except Exception as e:
-            self.log.info("Error %s connecting to %s:%s", e, host, port)
+            log.info("Error %s connecting to %s:%s", e, host, port)
             future.set_exception(e)
 
         return future
 
-        
-    
+
+
     @asyncio.coroutine
     def ping_nodes(self):
         '''
         Sends a request to each of our nodes to see if they are still alive
         '''
-        self.log.debug("Pinging %d nodes", len(self.routing.nodes))
+        log.debug("Pinging %d nodes", len(self.routing.nodes))
 
         futs = []
-        nodes = {}        
+        nodes = {}
 
         for node in self.routing:
-            self.log.debug("Pinging node %s", str(node))
+            log.debug("Pinging node %s", str(node))
             request = { "type":"ping_node", "params" : {} }
             fut = self.make_request(request, node)
             futs.append(fut)
             nodes[fut] = node
 
         complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
-    
+
         for f in complete:
             node = nodes[f]
             if f.exception() is not None:
                 self.routing.remove_node(node)
             else:
                 self.routing.add_or_update_node(node)
-                
+
         for f in pending:
             node = nodes[f]
             f.cancel()
@@ -274,17 +274,21 @@ class DHT:
         Adds the data to the network with id of hash_id, and the data specified
         '''
 
-        #Add to our own storage so it is available on the network from us
+        # Add to our own storage so it is available on the network from us
         self.storage.set(hash_id, data)
 
         nodes = yield from self.find_node(hash_id)
 
         futs = []
         for node in nodes:
-            request = { "request_type":"store_value", 
-                "params":
-                    { "id":hash_id, "node":self.routing.node.__dict__}
+            request = {
+                "request_type": "store_value",
+                "params": {
+                    "id": hash_id,
+                    "node": self.routing.node.__dict__,
+                    "value": data
                 }
+            }
             fut = self.make_request(request, node)
             futs.append(fut)
 
@@ -305,7 +309,7 @@ class DHT:
         while len(to_search) > 0:
 
             futs = []
-            self.log.debug("next search set %s", to_search)
+            log.debug("next search set %s", to_search)
             for node in to_search:
                 request = { "type":"find_node", "params":{ "id":hash_id } }
                 fut = self.make_request(request, node)
@@ -321,10 +325,10 @@ class DHT:
                 res = filter(lambda x: x.node_id != self.routing.node.node_id, res)
                 nodes.update(res)
 
-            self.log.debug("new nodes %s", nodes)
-                
+            log.debug("new nodes %s", nodes)
+
             to_search = set(self.routing.nearest_nodes(hash_id, nodes=nodes)) - searched
-            
+
             #Update our own routing table in case any of the found nodes are useful to us
             self.routing.add_nodes(to_search)
 
@@ -344,7 +348,7 @@ class DHT:
         nodes_with_value = set()
         while len(nodes_with_value) == 0 and len(to_search) > 0:
             futs = []
-            self.log.info("next search set %s", to_search)
+            log.info("next search set %s", to_search)
             for node in to_search:
                 request = { "type":"find_value", "params":{ "id":hash_id } }
                 fut = self.make_request(request, node)
@@ -356,7 +360,7 @@ class DHT:
             new_nodes = searched.copy()
             for fut in filter(lambda f: f.exception() is None, complete):
                 res = fut.result()
-                
+
                 #Either get back one node that has the value, or a list of nodes to check next
                 if isinstance(res, Node):
                     nodes_with_value.add(res)
@@ -365,13 +369,13 @@ class DHT:
                     new_nodes.update(res)
 
 
-            self.log.info("new nodes %s", new_nodes)
+            log.info("new nodes %s", new_nodes)
             #Don't want to contact ourselves if that was returned
             new_nodes.discard(self.routing.node)
 
             #Get the next set of top nodes, excluding nodes we've already searched
             to_search = set(self.routing.nearest_nodes(hash_id, nodes=new_nodes)) - searched
-            self.log.info("next search set %s", to_search)
+            log.info("next search set %s", to_search)
 
         return list(nodes_with_value)
 
@@ -385,24 +389,30 @@ class DHT:
 
         if(self.storage.hash(hash_id)):
             return self.storage.get(hash_id)
-        
-        if node is None:
-            nodes = yield from self.find_values(hash_id)
 
-            if len(nodes) == 0:
-                raise Exception("No nodes have the requested value ({})".format(hash_id))
+        while True:
+            if node is None:
+                nodes = yield from self.find_values(hash_id)
 
-            #just get from the first node
-            
-            for node in nodes:
+                if len(nodes) == 0:
+                    raise Exception("No nodes have the requested value ({})".format(hash_id))
+
+                #just get from the first node
+
+                for node in nodes:
+                    data = yield from self.networking.request_key(hash_id, node)
+                    if data:
+                        break
+            else:
                 data = yield from self.networking.request_key(hash_id, node)
-                if(data is not None):
-                    break
-        else:
-            data = yield from self.networking.request_key(hash_id, node)
+
+            if hash_data(data) == hash_id:
+                break
 
         if data is not None:
             self.storage.set(hash_id, data)
+
+        log.INFO("Read chunk %s from node %d" % (hash_id, node.node_id))
 
         return data
 
@@ -410,26 +420,28 @@ class DHT:
         with open(filename) as f:
             return json.loads(f.read())
 
-def main():
-    
-    arg = argparse.ArgumentParser(description="DHT client/server")
-    arg.add_argument("--config-file", dest="config_file", default="config.json", help="Config file location")
-
-    args = arg.parse_args()
+def startup(config_file):
+    log.setLevel(logging.INFO)
 
     loop = asyncio.get_event_loop()
     loop.set_debug(1)
-    log = logging.getLogger(__name__)
-    log.setLevel(logging.DEBUG)
-    dht = DHT(loop, args.config_file, log)    
+
+    dht = DHT(loop, config_file, log)
     dht.start()
 
-    loop.run_forever()
+    return loop, dht
 
+def main():
+    arg = argparse.ArgumentParser(description="DHT client/server")
+    arg.add_argument(
+        "--config-file",
+        dest="config_file",
+        default="config.json",
+        help="Config file location")
+
+    args = arg.parse_args()
+    loop = startup(args.config_file)[0]
+    loop.run_forever()
 
 if __name__ == '__main__':
     main()
-
-
-
-

@@ -3,7 +3,7 @@ import hashlib
 def hash_data(data):
 	h = hashlib.sha256()
 	h.update(data)
-	return h.digest()
+	return h.hexdigest()
 
 def xor_string(s1, s2):
 	return "".join([chr(ord(x) ^ ord(y)) for x,y in zip(s1, s2)])
