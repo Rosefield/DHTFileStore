@@ -137,8 +137,6 @@ class DistributedClient:
             for chunk in hashes:
                 hashfile.write("%s$%d|" % chunk)
 
-        log.debug("Wrote hashes to '%s'" % hashfile_path)
-
     @asyncio.coroutine
     def __store_file(self, file_path):
         '''
@@ -150,8 +148,9 @@ class DistributedClient:
             [(str, int), ...] a list of hash-size tuples
         '''
         unread = path.getsize(file_path)
+        start = unread
         hashes = []
-
+    
         with open(file_path, "rb") as file:
             while unread > 0:
                 chunk = file.read(MAX_CHUNK_SIZE)
@@ -160,9 +159,9 @@ class DistributedClient:
                 yield from self.dht.store_value(hash, chunk)
                 hashes.append((hash, min(MAX_CHUNK_SIZE, unread)))
 
-                unread -= MAX_CHUNK_SIZE
+                unread -= min(MAX_CHUNK_SIZE, unread)
+                log.info("Saving: {:.2%} done".format(1. - (float(unread)/start)))
 
-        print(hashes)
         return hashes
 
     def store_file(self, file_path, hashfile_path=None):

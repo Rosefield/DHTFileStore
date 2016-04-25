@@ -1,4 +1,8 @@
 import hash_utils
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger(__name__)
 
 class Node:
     def __init__(self, n):
@@ -11,6 +15,9 @@ class Node:
 
     def __str__(self):
         return "Node(id {}, ip {}, port {})".format(self.node_id, self.ip, self.port)
+
+    def __eq__(self, other):
+        return self.node_id == other.node_id
 
     def __hash__(self):
         return hash(self.node_id)
@@ -38,20 +45,26 @@ class Routing:
         if len(nodes) > self.bucket_size:
             nodes = self.nearest_nodes(self.node.node_id, nodes, self.bucket_size)
 
+        log.debug("Adding nodes %s", nodes)
+
         for node in nodes:
             if node.node_id == self.node.node_id:
                 continue
             self.nodes[node.node_id] = node
 
         self.set_nodes(self.nearest_nodes(self.node.node_id, k=self.bucket_size))
+        log.debug("Bucket size now %d", len(self.nodes))
+        
 
     def add_or_update_node(self, node):
         if(node.node_id == self.node.node_id):
             return
         id = node.node_id
         if id in self.nodes:
+            log.debug("Updating node %s", id)
             self.nodes[id] = node
         else:
+            log.debug("Adding node %s", node)
             self.nodes[id] = node
             self.set_nodes(self.nearest_nodes(self.node.node_id, k=self.bucket_size))
 

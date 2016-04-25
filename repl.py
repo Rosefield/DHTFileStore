@@ -25,7 +25,7 @@ class REPL(object):
     def __init__(self, config_file):
         # silence logging
         logging.basicConfig(level=logging.CRITICAL)
-        logging.getLogger("networking").disabled = False
+        logging.getLogger("networking").disabled = True
         logging.getLogger("dht").disabled = True
         logging.getLogger("routing").disabled = True
 
@@ -68,7 +68,7 @@ class REPL(object):
         self.print()
         self.print()
         self.print("Clear files from local storage")
-        self.print("\tr[etrieve] <hashfile_loc>...")
+        self.print("\tc[lear] <hashfile_loc>...")
         self.print()
         self.print()
         self.print("List the hashes stored locally")

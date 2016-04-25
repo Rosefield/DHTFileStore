@@ -319,6 +319,8 @@ class DHT:
 
         nodes = yield from self.find_node(hash_id)
 
+        log.info("Storing on nodes %s", nodes)
+
         futs = []
         for node in nodes:
             request = { "type": "store_value", "params": { "id": hash_id } }
@@ -358,8 +360,6 @@ class DHT:
                 res = fut.result()
                 res = filter(lambda x: x.node_id != self.node.node_id, res)
                 nodes.update(res)
-
-            log.debug("new nodes %s", nodes)
 
             to_search = set(self.routing.nearest_nodes(hash_id, nodes=nodes)) - searched
 
