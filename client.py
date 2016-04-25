@@ -1,6 +1,7 @@
 from os import path
 from argparse import ArgumentParser
 import logging
+import sys
 
 from dht import startup as start_dht
 from hash_utils import hash_data

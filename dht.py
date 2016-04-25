@@ -30,14 +30,14 @@ class DHT:
         self.node = Node(config)
         self.routing = Routing(self.node, [Node(n) for n in config["nodes"]])
         self.storage = Storage(config["file_dir"])
-        self.networking = Networking(self, self.storage, log)
+        self.networking = Networking(self, self.storage)
 
     def start(self):
         if self.server is None:
-
             #DHT Protocol server
-            task = asyncio.Task(self.loop.create_datagram_endpoint(lambda: self.networking,
-                        local_addr=(self.node.ip, self.node.port)))
+            task = asyncio.Task(self.loop.create_datagram_endpoint(
+                lambda: self.networking,
+                local_addr=(self.node.ip, self.node.port)))
 
 
             self.server, _ = self.loop.run_until_complete(task)
@@ -421,10 +421,8 @@ class DHT:
             return json.loads(f.read())
 
 def startup(config_file):
-    log.setLevel(logging.INFO)
-
     loop = asyncio.get_event_loop()
-    loop.set_debug(1)
+    # loop.set_debug(1)
 
     dht = DHT(loop, config_file, log)
     dht.start()
