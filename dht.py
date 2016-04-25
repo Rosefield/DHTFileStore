@@ -15,7 +15,7 @@ from storage import Storage
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
-HEALTH_CHECK_INTERVAL = 10
+HEALTH_CHECK_INTERVAL = 100
 
 class DHT:
     def __init__(self, eventLoop, config_file, log):
@@ -273,6 +273,7 @@ class DHT:
         Sends a request to each of our nodes to see if they are still alive
         '''
         log.debug("Pinging %d nodes", len(self.routing.nodes))
+        log.debug("%s", self.routing.nodes)
 
         futs = []
         nodes = {}
@@ -430,19 +431,20 @@ class DHT:
             #just get from the first node
             for node in nodes:
                 data = yield from self.networking.request_key(hash_id, node)
+                log.info("Read chunk %s from node %s" % (hash_id, node.node_id))
                 if data:
                     break
         else:
             data = yield from self.networking.request_key(hash_id, node)
+            log.info("Read chunk %s from node %s" % (hash_id, node.node_id))
 
         if data is not None:
             h = hash_utils.hash_data(data)
             if(h != hash_id):
-                log.warning("Data returned for request %s did not match the hash (calculated %s", hash_id, h)
+                log.warning("Data returned for request %s did not match the hash (calculated %s)", hash_id, h)
                 return None
             self.storage.set(hash_id, data)
 
-        log.info("Read chunk %s from node %d" % (hash_id, node.node_id))
 
         return data
 

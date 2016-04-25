@@ -7,6 +7,9 @@ class Storage:
     def __init__(self, file_dir):
         self.store = {}
         self.file_dir = file_dir
+        
+        #Ensure that the save directory exists
+        os.makedirs(self.file_dir, exist_ok=True)
 
         self.set(
             "2ea970ff63aec5d7a014ca6447ec743d3ba37450b85ebdcbb582b089b0194fa2",

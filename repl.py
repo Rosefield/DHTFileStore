@@ -25,7 +25,7 @@ class REPL(object):
     def __init__(self, config_file):
         # silence logging
         logging.basicConfig(level=logging.CRITICAL)
-        logging.getLogger("networking").disabled = True
+        logging.getLogger("networking").disabled = False
         logging.getLogger("dht").disabled = True
         logging.getLogger("routing").disabled = True
 
@@ -40,7 +40,7 @@ class REPL(object):
 
         # start up the magic
         self.loop, dht = start_dht(config_file)
-        self.client = DistributedClient(dht)
+        self.client = DistributedClient(dht, self.loop)
 
         # keep the CLI running
         asyncio.ensure_future(self.cli())

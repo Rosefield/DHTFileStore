@@ -2,6 +2,7 @@ from os import path
 from argparse import ArgumentParser
 import logging
 import sys
+import asyncio
 
 from dht import startup as start_dht
 from hash_utils import hash_data
@@ -54,8 +55,9 @@ def humansize(nbytes):
 
 
 class DistributedClient:
-    def __init__(self, dht):
+    def __init__(self, dht, loop):
         self.dht = dht
+        self.loop = loop
 
     def __retrieve_from_hashes(self, hashes):
         '''
@@ -63,9 +65,9 @@ class DistributedClient:
         data chunks and creates a local copy of the file
         '''
         for (hash, size) in hashes:
-            # this looks super weird but everything I can find on the internet
-            # says it's right
-            yield (yield from self.dht.get_value(hash))
+            log.debug("Retrieving chunk %s", hash)
+            val = self.loop.run_until_complete(self.dht.get_value(hash))
+            yield val
 
         yield None
 
@@ -137,6 +139,7 @@ class DistributedClient:
 
         log.debug("Wrote hashes to '%s'" % hashfile_path)
 
+    @asyncio.coroutine
     def __store_file(self, file_path): # TODO
         '''
         Stores file data on the network and returns a set of hashes stored
@@ -154,7 +157,7 @@ class DistributedClient:
                 chunk = file.read(MAX_CHUNK_SIZE)
                 hash = hash_data(chunk)
 
-                self.dht.store_value(hash, chunk)
+                yield from self.dht.store_value(hash, chunk)
                 hashes.append((hash, min(MAX_CHUNK_SIZE, unread)))
 
                 unread -= MAX_CHUNK_SIZE
@@ -174,7 +177,7 @@ class DistributedClient:
             (str) file path of created hash file
         '''
         # get file hashes
-        hashes = self.__store_file(file_path)
+        hashes = self.loop.run_until_complete(self.__store_file(file_path))
 
         # determine hash file path
         # TODO: better file name choice
@@ -193,7 +196,7 @@ class DistributedClient:
 
 def main(store, retrieve, config_file):
     loop, dht = start_dht(config_file)
-    client = DistributedClient(dht)
+    client = DistributedClient(dht, loop)
 
     if store:
         client.store_file(*store)

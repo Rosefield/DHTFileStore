@@ -109,7 +109,7 @@ class Networking:
             size = int.from_bytes(size[:-1], byteorder="little")
 
             log.debug("Request %s of size %d", hash_id, size)
-            data = yield from reader.read(size)
+            data = yield from reader.readexactly(size)
             log.debug("Finished receiving data for %s, received %d bytes", hash_id, len(data))
             data = data
 
