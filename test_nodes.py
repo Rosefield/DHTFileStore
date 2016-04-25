@@ -73,7 +73,7 @@ def main():
 
     nodes = create_nodes(num_nodes)
     files = []
-    for i in range(100):
+    for i in range(num_nodes):
         filename = create_config(i, nodes)
         files.append(filename)
 
