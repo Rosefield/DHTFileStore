@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 HEALTH_CHECK_INTERVAL = 100
 
 class DHT:
-    def __init__(self, eventLoop, config_file, log):
+    def __init__(self, eventLoop, config_file):
         self.loop = eventLoop
         self.config_file = config_file
         config = self.read_config(config_file)
@@ -35,21 +35,26 @@ class DHT:
         self.storage = Storage(config["file_dir"])
         self.networking = Networking(self, self.storage)
 
-    def start(self):
+    @asyncio.coroutine
+    def start_async(self):
         if self.server is None:
             #DHT Protocol server
-            task = asyncio.Task(self.loop.create_datagram_endpoint(
+            create_udp_server = asyncio.Task(self.loop.create_datagram_endpoint(
                 lambda: self.networking,
                 local_addr=(self.node.ip, self.node.port)))
 
 
-            self.server, _ = self.loop.run_until_complete(task)
+            self.server, _ = yield from create_udp_server
 
             #File Transfer protocol server
-            task = asyncio.streams.start_server(self.networking.handle_client, self.node.ip, self.node.port, loop=self.loop)
-            self.loop.run_until_complete(task)
-            self.loop.run_until_complete(self.join())
+            create_tcp_server = asyncio.streams.start_server(self.networking.handle_client, self.node.ip, self.node.port, loop=self.loop)
+            
+            yield from create_tcp_server
+            yield from self.join()
             asyncio.ensure_future(self.health_check())
+
+    def start(self):
+        self.loop.run_until_complete(self.start_async())
 
         return
 
@@ -64,20 +69,17 @@ class DHT:
             log.info("Health check")
             yield from self.ping_nodes()
 
-            # data = os.urandom(1000)
-            # h = hash_utils.hash_data(data)
+            for key in list(self.request_magics):
+                value = self.request_magics[key]
+                fut = value["fut"]
+                #Remove any request_magics that were from unsatisfied requests
+                if(fut.done()):
+                    log.debug("removed orphaned request magic %s", key)
+                    del self.request_magics[key]
+            
 
-            # h = "2ea970ff63aec5d7a014ca6447ec743d3ba37450b85ebdcbb582b089b0194fa2"
-            # data = self.storage.get(h)
-
-
-            # yield from self.store_value(h, data)
-            # test = yield from self.get_value(h)
-
-            # log.debug("Get value successful %s", test == data)
-
-            log.info("Keys in storage: %d\n" % len(self.storage.store))
-            for key in self.storage.store:
+            log.info("Keys in storage: %d\n" % len(self.storage.keys()))
+            for key in self.storage.keys():
                 log.info(key)
 
             #Check every 10 minutes
@@ -463,7 +465,7 @@ def startup(config_file):
     loop = asyncio.get_event_loop()
     # loop.set_debug(1)
 
-    dht = DHT(loop, config_file, log)
+    dht = DHT(loop, config_file)
     dht.start()
     dht.loop = loop
 

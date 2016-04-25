@@ -140,7 +140,7 @@ class DistributedClient:
         log.debug("Wrote hashes to '%s'" % hashfile_path)
 
     @asyncio.coroutine
-    def __store_file(self, file_path): # TODO
+    def __store_file(self, file_path):
         '''
         Stores file data on the network and returns a set of hashes stored
 

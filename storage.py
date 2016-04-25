@@ -5,7 +5,6 @@ log = getLogger(__name__)
 
 class Storage:
     def __init__(self, file_dir):
-        self.store = {}
         self.file_dir = file_dir
         
         #Ensure that the save directory exists
