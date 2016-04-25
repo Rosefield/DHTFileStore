@@ -4,11 +4,10 @@ import logging
 import sys
 import shlex
 import asyncio
+from client import DistributedClient
 from concurrent.futures import ThreadPoolExecutor
 
-from client import DistributedClient
 from dht import startup as start_dht
-from hash_utils import hash_data
 
 # discards everything written to it
 class Discarder(object):
@@ -36,7 +35,7 @@ class REPL(object):
         handler.setFormatter(formatter)
         client_log.addHandler(handler)
         client_log.propagate = False
-        client_log.setLevel(logging.DEBUG)
+        client_log.setLevel(logging.INFO)
 
         # start up the magic
         self.loop, dht = start_dht(config_file)
@@ -57,26 +56,10 @@ class REPL(object):
         self.print("Usage:")
         self.print()
         self.print("Store a file on the network")
-        self.print("\ts[tore] <file_loc> <hashfile_loc>")
+        self.print("\tstore <file_loc> <hashfile_loc>:")
         self.print()
         self.print("Retrieve a file from the network")
-        self.print("\tr[etrieve] <hashfile_loc> <dest_loc>")
-        self.print()
-        self.print()
-        self.print("Test storing and retrieving files from the network")
-        self.print("\tt[est] <hashfile_loc>...")
-        self.print()
-        self.print()
-        self.print("Clear files from local storage")
-        self.print("\tr[etrieve] <hashfile_loc>...")
-        self.print()
-        self.print()
-        self.print("List the hashes stored locally")
-        self.print("\tl[ist]")
-        self.print()
-        self.print()
-        self.print("Exit the CLI")
-        self.print("\tq[uit]")
+        self.print("\tretrieve <hashfile_loc> <dest_loc>:")
         self.print()
         self.print("(paths containing spaces should be wrapped in quotes)")
         self.print()
@@ -96,53 +79,21 @@ class REPL(object):
         args = shlex.split(input)
 
         if args:
-            op, args = (args[0].lower(), args[1:])
+            op, = args[0].lower();
 
-            if op in ("s", "store") and len(args) == 2:
-                # store a file
-                self.client.store_file(*args)
+            if op in ("s", "store") and len(args) == 3:
+                self.client.store_file(*args[1:])
                 self.print()
-            elif op in ("r", "retrieve") and len(args) == 2:
-                # retrieve a file
-                self.client.retrieve_file(*args)
-                self.print()
-            elif op in ("t", "test") and len(args):
-                # test storing and retrieving a file
-                for file in args:
-                    self.test_store_retrieve(file)
-                self.print()
-            elif op in ("c", "clear") and len(args):
-                # clear a file from local storage
-                for path in args:
-                    self.print(path)
-                    for hash, size in self.client.hashes_from_file(path):
-                        self.client.dht.storage.clear(hash)
-            elif op in ("l", "list"):
-                # list hashes of locally-stored chunks
-                for hash in self.client.dht.storage.keys():
-                    self.print(hash)
+            elif op in ("r", "retrieve") and len(args) == 3:
+                self.client.retrieve_file(*args[1:])
                 self.print()
             elif op in ("q", "quit"):
-                # exit the REPL
                 self.loop.stop()
                 quit()
             else:
                 self.show_usage()
         else:
             self.show_usage()
-
-    def test_store_retrieve(self, file_path):
-        self.handle_input("s %s dht_store/tmp_keys" % file_path)
-        self.handle_input("r dht_store/tmp_keys dht_store/tmp_data")
-
-        with open(file_path, "rb") as file:
-            hash_before = hash_data(file.read())
-
-        with open("dht_store/tmp_data", "rb") as file:
-            hash_after = hash_data(file.read())
-
-        self.print(
-            "Before: %s\nAfter: %s" % (hash_before, hash_after))
 
 
 if __name__ == "__main__":

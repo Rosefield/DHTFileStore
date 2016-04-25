@@ -57,28 +57,23 @@ class DistributedClient:
     def __init__(self, dht):
         self.dht = dht
 
-    def __retrieve_from_hashes(self, hashes): # TODO
+    def __retrieve_from_hashes(self, hashes):
         '''
         Given a list of tuples containing hashes and chunk sizes, retrieves the
         data chunks and creates a local copy of the file
         '''
         for (hash, size) in hashes:
-            yield bytearray(
-                "Hash: %s\tSize (bytes): %s\n" % (hash, humansize(size)),
-                "utf-8")
+            # this looks super weird but everything I can find on the internet
+            # says it's right
+            yield (yield from self.dht.get_value(hash))
 
         yield None
 
-    def __retrieve_from_file(self, hashfile_path):
-        '''
-        Given a path to a file containing hashes and chunk sizes, retrieves the
-        data chunks and creates a local copy of the file
-        '''
-        print("__retrieve_from_file")
+    def hashes_from_file(self, hashfile_path):
         # read hashes from file
         # TODO: verify integrity of hash file (error check this)
         with open(hashfile_path, "r") as hashfile:
-            hashes = [(hash, int(size)) for (hash, size) in # cast size to int
+            return [(hash, int(size)) for (hash, size) in # cast size to int
                 [pair.split("$") for pair in # split each pair string by $
                 hashfile.read().split("|") # split up the file by pipes
                 if pair]] # ignore empty string residues from end of file
@@ -88,11 +83,14 @@ class DistributedClient:
             # pair_strings = filter(None, contents.split("|"))
             # pairs = map(lambda pair_str: pair_str.split("$"), pair_strings)
             # hashes = map(lambda pair: (pair[0], int(pair[1])), pairs)
+            # return hashes
 
-        log.debug("Read hashes from '%s'")
-
-        # retrieve data from read hashes
-        yield from self.__retrieve_from_hashes(hashes)
+    def __retrieve_from_file(self, hashfile_path):
+        '''
+        Given a path to a file containing hashes and chunk sizes, retrieves the
+        data chunks and creates a local copy of the file
+        '''
+        return self.__retrieve_from_hashes(self.hashes_from_file(hashfile_path))
 
     def retrieve_file(self, hash_data, file_path):
         '''
@@ -114,8 +112,6 @@ class DistributedClient:
         # write to the file as chunks become available
         with open(file_path, "wb") as local_file:
             for chunk in retrieve_fn(hash_data):
-                print(chunk)
-
                 if chunk is not None:
                     # write to local file
                     local_file.write(chunk)

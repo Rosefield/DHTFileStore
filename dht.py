@@ -5,11 +5,14 @@ import json
 import logging
 import os
 import base64
+import sys # DEBUG
+from concurrent.futures import ThreadPoolExecutor as Executor
+
 from networking import Networking
 from routing import Node, Routing
 from storage import Storage
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 10
@@ -61,18 +64,21 @@ class DHT:
             log.info("Health check")
             yield from self.ping_nodes()
 
-            data = os.urandom(1000)
-            h = hash_utils.hash_data(data)
-            yield from self.store_value(h, data)
+            # data = os.urandom(1000)
+            # h = hash_utils.hash_data(data)
 
-            h = "2ea970ff63aec5d7a014ca6447ec743d3ba37450b85ebdcbb582b089b0194fa2"
-            data = self.storage.get(h)
+            # h = "2ea970ff63aec5d7a014ca6447ec743d3ba37450b85ebdcbb582b089b0194fa2"
+            # data = self.storage.get(h)
 
 
-            test = yield from self.get_value(h)
+            # yield from self.store_value(h, data)
+            # test = yield from self.get_value(h)
 
-            log.debug("Get value successful %s", test == data)
+            # log.debug("Get value successful %s", test == data)
 
+            log.info("Keys in storage: %d\n" % len(self.storage.store))
+            for key in self.storage.store:
+                log.info(key)
 
             #Check every 10 minutes
             yield from asyncio.sleep(HEALTH_CHECK_INTERVAL)
@@ -153,7 +159,11 @@ class DHT:
         self.routing.add_or_update_node(request_node)
 
 
-        response = {"magic":request["magic"], "type":request["type"], "resp":True}
+        response = {
+            "magic": request["magic"],
+            "type": request["type"],
+            "resp": True
+        }
 
         #Mostly for testing
         if(request_type == "ping_nodes"):
@@ -165,7 +175,7 @@ class DHT:
         request_hash = request_params.get("id")
         if(request_type == "store_value"):
             #Initialize a get request to the other node, opens a TCP connection to transfer the data
-            yield from self.get_value(request_hash, node=request_node)
+            data = yield from self.get_value(request_hash, node=request_node)
             response["result"] = "saved"
 
         if(request_type == "find_node"):
@@ -274,21 +284,23 @@ class DHT:
             futs.append(fut)
             nodes[fut] = node
 
-
-
+        self.ensure_not_empty(futs)
         complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
 
-        for f in complete:
-            node = nodes[f]
-            if f.exception() is not None:
-                self.routing.remove_node(node)
-            else:
-                self.routing.add_or_update_node(node)
+        try: # catch exceptions raised by NOP futures
+            for f in complete:
+                node = nodes[f]
+                if f.exception() is not None:
+                    self.routing.remove_node(node)
+                else:
+                    self.routing.add_or_update_node(node)
 
-        for f in pending:
-            node = nodes[f]
-            f.cancel()
-            self.routing.remove_node(node)
+            for f in pending:
+                node = nodes[f]
+                f.cancel()
+                self.routing.remove_node(node)
+        except:
+            pass
 
         return
 
@@ -306,10 +318,10 @@ class DHT:
 
         futs = []
         for node in nodes:
-            request = { "type":"store_value", "params": { "id":hash_id } }
-            fut = self.make_request(request, node)
-            futs.append(fut)
+            request = { "type": "store_value", "params": { "id": hash_id } }
+            futs.append(self.make_request(request, node))
 
+        self.ensure_not_empty(futs)
         complete, pending = yield from asyncio.wait(futs)
 
         return
@@ -333,6 +345,7 @@ class DHT:
                 fut = self.make_request(request, node)
                 futs.append(fut)
 
+            self.ensure_not_empty(futs)
             complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
 
             searched.update(to_search)
@@ -357,8 +370,8 @@ class DHT:
         '''
         Makes a request to the n nodes with ids closest to hash_id to find who has the file hash_id
         '''
-        #if(self.storage.has(hash_id)):
-        #    return self.node
+        if(self.storage.has(hash_id)):
+           return self.node
 
         to_search = self.routing.nearest_nodes(hash_id)
         searched = set()
@@ -372,6 +385,7 @@ class DHT:
                 fut = self.make_request(request, node)
                 futs.append(fut)
 
+            self.ensure_not_empty(futs)
             complete, pending = yield from asyncio.wait(futs, timeout=self.max_timeout)
 
             searched.update(to_search)
@@ -403,8 +417,8 @@ class DHT:
         '''
         data = None
 
-        #if(self.storage.has(hash_id)):
-        #    return self.storage.get(hash_id)
+        if(self.storage.has(hash_id)):
+            return self.storage.get(hash_id)
 
         if node is None:
             nodes = yield from self.find_value(hash_id)
@@ -412,14 +426,14 @@ class DHT:
             if len(nodes) == 0:
                 raise Exception("No nodes have the requested value ({})".format(hash_id))
 
-            #just get from the first node
 
+            #just get from the first node
             for node in nodes:
                 data = yield from self.networking.request_key(hash_id, node)
                 if data:
                     break
-            else:
-                data = yield from self.networking.request_key(hash_id, node)
+        else:
+            data = yield from self.networking.request_key(hash_id, node)
 
         if data is not None:
             h = hash_utils.hash_data(data)
@@ -436,12 +450,20 @@ class DHT:
         with open(filename) as f:
             return json.loads(f.read())
 
+    # asyncio requires that all calls to asyncio.wait have a non-empty list of
+    # futures; this method checks lists of futures for emptiness and adds a NOP
+    # if so
+    def ensure_not_empty(self, futs):
+        if not futs:
+            futs.append(asyncio.Future(loop=self.loop))
+
 def startup(config_file):
     loop = asyncio.get_event_loop()
     # loop.set_debug(1)
 
     dht = DHT(loop, config_file, log)
     dht.start()
+    dht.loop = loop
 
     return loop, dht
 
