@@ -68,6 +68,7 @@ class DHT:
         while True:
             log.info("Health check")
             yield from self.ping_nodes()
+            yield from self.find_node(self.node.node_id)
 
             for key in list(self.request_magics):
                 value = self.request_magics[key]

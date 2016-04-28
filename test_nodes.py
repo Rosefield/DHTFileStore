@@ -6,9 +6,13 @@ import json
 import os
 from routing import Node
 import random
+import socket
+
+def get_ip():
+    return socket.gethostbyname(socket.gethostname())
 
 TEST_DIR = "test_files"
-IP = "127.0.0.1"
+IP = get_ip()
 BASE_PORT = 55000
 
 def create_nodes(num=1000):
